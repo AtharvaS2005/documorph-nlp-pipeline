@@ -105,8 +105,12 @@ Then install Docker Desktop from https://www.docker.com/products/docker-desktop/
 
 Start Qdrant (vector database) and Redis (Celery broker/result backend):
 
-    docker run -d -p 6333:6333 --name qdrant qdrant/qdrant
-    docker run -d -p 6379:6379 --name redis redis:alpine
+    docker run -d -p 127.0.0.1:6333:6333 -v qdrant_data:/qdrant/storage --name qdrant qdrant/qdrant
+    docker run -d -p 127.0.0.1:6379:6379 --name redis redis:alpine
+
+Bind both to `127.0.0.1` as shown: neither has authentication, and Qdrant
+holds the text of every indexed document. The volume keeps Qdrant's index
+across container re-creation.
 
 ### 4. DeepSeek-OCR / Table Transformer / BGE-M3 model downloads
 
@@ -186,6 +190,20 @@ Check it's healthy:
   masked in the answer and passages (`guard.redactions`).
 
 ## Configuration
+
+**`PIPELINE_API_KEY` (required in practice).** Every endpoint except
+`/health` requires the header `X-Pipeline-Key` with this value; the backend
+sends it. The service listens on all interfaces so the backend can reach it
+from Docker, and these endpoints read, delete and add workspace documents,
+so without a key anyone on the network could use them. If it isn't set,
+only requests from this machine are accepted, which blocks the backend's
+calls from Docker. Put it in a `.env` file in the repository root (already
+git-ignored), using the same value as the backend:
+
+    PIPELINE_API_KEY=<a long random string>
+
+Generate one with
+`python -c "import secrets; print(secrets.token_urlsafe(32))"`.
 
 The following environment variables control where the service looks for
 its dependencies — all have working defaults for local use, override them

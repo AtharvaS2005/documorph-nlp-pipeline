@@ -21,18 +21,29 @@ dispatched by name via Celery's send_task), so it never loads the heavy
 OCR/ML stack itself and stays fast to start.
 """
 
+import hmac
+import ipaddress
+import logging
 import os
 import sys
 import tempfile
 import uuid
 from typing import Any, Dict, List
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _THIS_DIR)
+
+try:  # settings such as PIPELINE_API_KEY may live in the repo-root .env
+    from dotenv import load_dotenv
+
+    load_dotenv(os.path.join(os.path.dirname(_THIS_DIR), ".env"))
+except ImportError:
+    pass
 
 from celery_app import celery_app  # noqa: E402
 import llm_pipeline  # noqa: E402
@@ -44,6 +55,40 @@ UPLOAD_DIR = os.getenv("SHARED_UPLOAD_DIR", os.path.join(tempfile.gettempdir(), 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 app = FastAPI(title="Document NLP Pipeline")
+
+log = logging.getLogger("pipeline")
+
+# Shared secret the backend sends as X-Pipeline-Key. The service listens on
+# all interfaces (the backend reaches it from inside Docker), and every
+# endpoint but /health reads or changes a workspace's documents, so without
+# the key anyone on the network could read, delete or inject them.
+PIPELINE_API_KEY = os.getenv("PIPELINE_API_KEY", "").strip()
+_OPEN_PATHS = {"/health"}
+if not PIPELINE_API_KEY:
+    log.warning(
+        "PIPELINE_API_KEY is not set: only requests from this machine are accepted. "
+        "Set it (and the same value for the backend) to accept the backend's calls from Docker."
+    )
+
+
+def _is_loopback(host: str) -> bool:
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+@app.middleware("http")
+async def require_api_key(request: Request, call_next):
+    if request.url.path in _OPEN_PATHS:
+        return await call_next(request)
+    if PIPELINE_API_KEY:
+        supplied = request.headers.get("x-pipeline-key", "")
+        if not hmac.compare_digest(supplied.encode(), PIPELINE_API_KEY.encode()):
+            return JSONResponse(status_code=401, content={"detail": "Missing or invalid pipeline key."})
+    elif not _is_loopback(request.client.host if request.client else ""):
+        return JSONResponse(status_code=401, content={"detail": "Pipeline key required for remote requests."})
+    return await call_next(request)
 
 
 class ProcessResponse(BaseModel):
