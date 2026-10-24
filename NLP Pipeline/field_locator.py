@@ -45,6 +45,11 @@ def _value_variants(value: str) -> List[str]:
     bare = re.sub(r"^[^\w]+|[^\w.]+$", "", v)  # strip leading symbols / trailing units
     out.append(bare)
     nums = re.sub(r"(?<=\d),(?=\d{3}\b)", "", bare)
+    # OCR/LLM noise sometimes glues a stray letter to a number ("a1416.00");
+    # look for the number itself so the user can see what the page says.
+    noisy = re.fullmatch(r"[A-Za-z]{1,2}([\d,]*\d(?:\.\d+)?)|([\d,]*\d(?:\.\d+)?)[A-Za-z]{1,2}", nums)
+    if noisy and len(re.sub(r"\D", "", noisy.group(1) or noisy.group(2))) >= 3:
+        nums = re.sub(r"(?<=\d),(?=\d{3}\b)", "", noisy.group(1) or noisy.group(2))
     out.append(nums)
     m = re.fullmatch(r"(-?\d+)(?:\.(\d+))?", nums)
     if m:
