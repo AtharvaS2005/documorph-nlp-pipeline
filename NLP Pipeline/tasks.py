@@ -27,6 +27,7 @@ sys.path.insert(0, _THIS_DIR)
 from celery_app import celery_app  # noqa: E402
 
 import OCR_Text_Extraction as ocr_pipeline  # noqa: E402
+import field_locator  # noqa: E402
 import llm_pipeline  # noqa: E402
 
 _ENGINES: Dict[str, Any] = {}
@@ -148,11 +149,21 @@ def process_document_task(
         except Exception as exc:
             structured_json = {"error": str(exc)}
 
+        # Where each field sits on the original page, for highlighting in the
+        # UI. Best effort: a failure here must not fail the extraction.
+        field_locations: Dict[str, Any] = {}
+        if mode_upper == "CUSTOM_FIELDS" and isinstance(structured_json, dict):
+            try:
+                field_locations = field_locator.locate_fields(file_path, structured_json, engines["paddle"])
+            except Exception:
+                field_locations = {}
+
         return {
             "extractedText": extracted_text,
             "structuredJson": structured_json,
             "tables": tables,
             "mode": mode_upper,
+            "fieldLocations": field_locations,
         }
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
