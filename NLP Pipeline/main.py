@@ -236,12 +236,15 @@ async def retrieve(payload: RetrieveRequest) -> List[Dict[str, Any]]:
 @app.post("/answer")
 async def answer(payload: AnswerRequest) -> Dict[str, Any]:
     """Retrieve the workspace's most relevant passages, then have the LLM
-    answer from them. Every passage is returned with its 1-based number so
-    the caller can resolve the [n] citations in the answer. Both steps are
-    blocking (embedding model, Ollama), so they run off the event loop."""
+    answer from them behind the guardrails in chat_guardrails.py. The
+    passages returned are the ones the model saw, numbered from 1 so the
+    caller can resolve the [n] citations. Both steps are blocking
+    (embedding model, Ollama), so they run off the event loop."""
     question = (payload.question or "").strip()
     if not question:
         raise HTTPException(status_code=400, detail="Question is empty.")
+    if len(question) > 1000:
+        raise HTTPException(status_code=400, detail="Question is too long.")
     try:
         passages = await run_in_threadpool(
             rag_pipeline.retrieve, question, payload.topK, payload.workspaceId
@@ -249,7 +252,6 @@ async def answer(payload: AnswerRequest) -> Dict[str, Any]:
         result = await run_in_threadpool(llm_pipeline.answer_question, question, passages)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Answering failed: {exc}")
-    result["passages"] = [dict(p, number=i) for i, p in enumerate(passages, start=1)]
     return result
 
 

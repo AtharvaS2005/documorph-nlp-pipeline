@@ -164,9 +164,26 @@ Check it's healthy:
 - `POST /answer` — JSON body `{ question, topK?, workspaceId }`. Retrieves
   the workspace's most relevant passages, then has the LLM answer from them
   alone (temperature 0, schema-constrained, reasoning stripped). Returns
-  `{ answer, sources, model_used, passages }`: `passages` are the retrieved
-  chunks numbered from 1, and `sources` lists the numbers the answer used.
-  With no relevant passages it says so rather than guessing.
+  `{ outcome, answer, sources, model_used, passages, guard }`: `passages`
+  are the chunks the model saw, numbered from 1, and `sources` lists the
+  numbers the answer used. Guardrails (`NLP Pipeline/chat_guardrails.py`)
+  decide `outcome`:
+  - `BLOCKED` — the question tries to instruct the model ("ignore the
+    previous instructions", "you are now...").
+  - `REFUSED` — not a question about the documents (poems, code,
+    translation, opinions). Obvious cases are caught by pattern before the
+    model is called; the model flags the rest itself.
+  - `NOT_FOUND` — nothing relevant was retrieved, or the model reports the
+    documents don't contain the answer.
+  - `UNGROUNDED` — the answer contains a number that isn't in the passages
+    and isn't a sum or difference of two of them.
+  - `ANSWERED` — otherwise.
+
+  Passages are untrusted: lines in them that try to instruct the model are
+  removed before the model sees them (`guard.sanitizedPassages` counts
+  them), and the rest is wrapped in `<document>` tags the system prompt
+  marks as data. Card numbers (Luhn-checked), Aadhaar, PAN and US SSNs are
+  masked in the answer and passages (`guard.redactions`).
 
 ## Configuration
 
