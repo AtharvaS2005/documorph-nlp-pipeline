@@ -359,3 +359,80 @@ def run_llm(
         except Exception:
             result["json"] = None
     return result
+
+
+def answer_question(
+    question: str,
+    passages: List[Dict[str, Any]],
+    model: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Answer a question using only the retrieved passages (the generation
+    half of RAG). Passages are numbered [1], [2], ... in the prompt and the
+    model must say which ones it used. Returns {"answer", "sources",
+    "model_used"}, where "sources" lists the 1-based passage numbers cited.
+
+    Same pattern as CUSTOM_FIELDS questions: schema-constrained output with
+    a "reasoning" field first, stripped before returning, and temperature
+    0. Cited numbers outside the passage range are dropped, so a citation
+    can always be resolved back to a real passage."""
+    if not passages:
+        return {
+            "answer": "I couldn't find anything in your documents about that.",
+            "sources": [],
+            "model_used": None,
+        }
+
+    numbered = "\n\n".join(
+        f"[{i}] (from {p.get('file_name') or 'unknown file'})\n{p.get('text', '')}"
+        for i, p in enumerate(passages, start=1)
+    )
+    prompt = (
+        "Answer the question using ONLY the numbered passages below, which "
+        "come from the user's own documents. Do not use outside knowledge. "
+        "If the passages do not contain the answer, say you could not find "
+        "it in the documents. Keep the answer short and plain. Cite the "
+        "passages you used inline like [1] or [2][3].\n\n"
+        "Respond as JSON with \"reasoning\" (your step-by-step work), "
+        "\"answer\" (your final answer with inline citations) and "
+        "\"sources\" (the passage numbers you used).\n\n"
+        f"Passages:\n{numbered}\n\n"
+        f"Question: {question}"
+    )
+    fmt = {
+        "type": "object",
+        "properties": {
+            "reasoning": {"type": "string"},
+            "answer": {"type": "string"},
+            "sources": {"type": "array", "items": {"type": "integer"}},
+        },
+        "required": ["reasoning", "answer", "sources"],
+        "additionalProperties": False,
+    }
+
+    resolved_model = _resolve_model(model)
+    client = _get_client()
+    messages = [{"role": "user", "content": prompt}]
+    try:
+        response = client.chat(model=resolved_model, messages=messages, format=fmt, options={"temperature": 0})
+    except Exception:
+        if resolved_model == FALLBACK_MODEL:
+            raise
+        resolved_model = FALLBACK_MODEL
+        response = client.chat(model=resolved_model, messages=messages, format=fmt, options={"temperature": 0})
+
+    try:
+        parsed = json.loads(response.message.content or "")
+    except Exception:
+        parsed = {}
+    answer = str(parsed.get("answer") or "").strip()
+    cited = parsed.get("sources") if isinstance(parsed.get("sources"), list) else []
+    # also pick up [n] markers in the text the model forgot to list
+    cited = list(cited) + [int(n) for n in re.findall(r"\[(\d+)\]", answer)]
+    sources: List[int] = []
+    for n in cited:
+        if isinstance(n, int) and 1 <= n <= len(passages) and n not in sources:
+            sources.append(n)
+
+    if not answer:
+        answer = "I couldn't work out an answer from your documents."
+    return {"answer": answer, "sources": sorted(sources), "model_used": resolved_model}

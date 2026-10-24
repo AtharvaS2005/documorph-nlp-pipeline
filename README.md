@@ -161,6 +161,12 @@ Check it's healthy:
 - `POST /retrieve` — JSON body `{ query, topK?, workspaceId }`. Returns a
   list of `{ text, score, docId, chunkIndex, sessionId, fileName }`,
   most relevant first, scoped to that workspace's indexed documents.
+- `POST /answer` — JSON body `{ question, topK?, workspaceId }`. Retrieves
+  the workspace's most relevant passages, then has the LLM answer from them
+  alone (temperature 0, schema-constrained, reasoning stripped). Returns
+  `{ answer, sources, model_used, passages }`: `passages` are the retrieved
+  chunks numbered from 1, and `sources` lists the numbers the answer used.
+  With no relevant passages it says so rather than guessing.
 
 ## Configuration
 

@@ -6,6 +6,7 @@ Endpoints:
   GET  /status/{pythonJobId}  -- poll job status/progress/result
   POST /index                 -- index already-extracted text into Qdrant for RAG retrieval
   POST /retrieve               -- RAG similarity search, scoped to a workspace
+  POST /answer                 -- RAG question answering: retrieve, then answer with citations
   GET  /health                -- health check (Redis/Celery/Ollama/Qdrant reachability)
 
 Processing is asynchronous: a single document can take 15-20+ minutes, which
@@ -27,6 +28,7 @@ import uuid
 from typing import Any, Dict, List
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -63,6 +65,12 @@ class IndexResponse(BaseModel):
 
 class RetrieveRequest(BaseModel):
     query: str
+    topK: int = 5
+    workspaceId: str
+
+
+class AnswerRequest(BaseModel):
+    question: str
     topK: int = 5
     workspaceId: str
 
@@ -224,6 +232,26 @@ async def retrieve(payload: RetrieveRequest) -> List[Dict[str, Any]]:
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Retrieval failed: {exc}")
     
+
+@app.post("/answer")
+async def answer(payload: AnswerRequest) -> Dict[str, Any]:
+    """Retrieve the workspace's most relevant passages, then have the LLM
+    answer from them. Every passage is returned with its 1-based number so
+    the caller can resolve the [n] citations in the answer. Both steps are
+    blocking (embedding model, Ollama), so they run off the event loop."""
+    question = (payload.question or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="Question is empty.")
+    try:
+        passages = await run_in_threadpool(
+            rag_pipeline.retrieve, question, payload.topK, payload.workspaceId
+        )
+        result = await run_in_threadpool(llm_pipeline.answer_question, question, passages)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Answering failed: {exc}")
+    result["passages"] = [dict(p, number=i) for i, p in enumerate(passages, start=1)]
+    return result
+
 
 @app.post("/delete-docs")
 async def delete_docs(payload: DeleteDocsRequest) -> Dict[str, Any]:
