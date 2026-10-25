@@ -18,7 +18,7 @@ import os
 import shutil
 import sys
 import tempfile
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(_THIS_DIR, "..", "Text Extraction"))
@@ -77,16 +77,18 @@ def _render_tables_as_text(tables: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-@celery_app.task(bind=True, name="tasks.process_document_task")
-def process_document_task(
-    self,
+def run_pipeline(
     file_path: str,
     mode: str,
     custom_prompt: str = "",
+    progress_cb: Optional[Callable[[float], None]] = None,
 ) -> Dict[str, Any]:
-    """Run the full OCR/table/LLM pipeline on an already-saved file, updating
-    task progress after each page. Returns the same result shape as the old
-    synchronous /extract response."""
+    """Run the full OCR/table/LLM pipeline on an already-saved file, reporting
+    progress (0-1) after each page. Returns the same result shape as the old
+    synchronous /extract response.
+
+    Kept free of any queue dependency so both runners share it: the Celery
+    task below on a single local GPU, and modal_app.py on serverless GPUs."""
     engines = _get_engines()
 
     tmp_dir = tempfile.mkdtemp(prefix="docupipeline_task_")
@@ -98,8 +100,10 @@ def process_document_task(
         }
 
         def _progress(pages_done: int, pages_total: int) -> None:
+            if progress_cb is None:
+                return
             fraction = (pages_done / pages_total) if pages_total else 0.0
-            self.update_state(state="PROGRESS", meta={"progress": round(fraction, 3)})
+            progress_cb(round(fraction, 3))
 
         ocr_pipeline.process_document(
             item=item,
@@ -172,3 +176,17 @@ def process_document_task(
         except OSError:
             pass
 
+
+@celery_app.task(bind=True, name="tasks.process_document_task")
+def process_document_task(
+    self,
+    file_path: str,
+    mode: str,
+    custom_prompt: str = "",
+) -> Dict[str, Any]:
+    """Celery entry point for the local single-GPU setup."""
+
+    def _report(fraction: float) -> None:
+        self.update_state(state="PROGRESS", meta={"progress": fraction})
+
+    return run_pipeline(file_path, mode, custom_prompt, progress_cb=_report)
