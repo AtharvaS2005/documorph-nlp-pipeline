@@ -1,0 +1,17 @@
+# Dependencies for the lightweight API service only (main.py with
+# PIPELINE_BACKEND=modal). It dispatches documents to Modal and runs search
+# itself, so it needs the embedding model and Qdrant client but none of the
+# OCR or GPU stack. PyTorch is installed separately from the CPU-only index;
+# see Dockerfile.api. The full local stack is in requirements.txt.
+numpy==1.26.4
+transformers==4.46.3
+sentence-transformers==5.6.1
+langchain-text-splitters==1.1.2
+qdrant-client==1.19.0
+ollama==0.6.2
+fastapi==0.141.1
+uvicorn==0.52.1
+python-multipart==0.0.32
+pydantic==2.12.5
+python-dotenv==1.2.2
+modal==1.6.2

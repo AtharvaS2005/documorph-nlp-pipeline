@@ -1,0 +1,24 @@
+# Lightweight API service for cloud deployment. Documents are processed on
+# Modal's GPUs (modal_app.py); this container accepts uploads, dispatches
+# them, reports status, and runs search with bge-m3 on CPU.
+# Works on x86 and ARM (e.g. an Oracle Cloud Ampere VM).
+FROM python:3.11-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    HF_HOME=/hf \
+    PIPELINE_BACKEND=modal
+
+WORKDIR /app
+
+# CPU-only PyTorch: the default PyPI build pulls in several GB of CUDA libraries.
+RUN pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+
+COPY requirements-api.txt .
+RUN pip install -r requirements-api.txt
+
+COPY ["NLP Pipeline", "/app/NLP Pipeline"]
+
+EXPOSE 8000
+CMD ["uvicorn", "main:app", "--app-dir", "/app/NLP Pipeline", "--host", "0.0.0.0", "--port", "8000"]

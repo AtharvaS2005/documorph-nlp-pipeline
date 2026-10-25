@@ -45,9 +45,31 @@ try:  # settings such as PIPELINE_API_KEY may live in the repo-root .env
 except ImportError:
     pass
 
-from celery_app import celery_app  # noqa: E402
 import llm_pipeline  # noqa: E402
 import rag_pipeline  # noqa: E402
+
+# Where documents are processed:
+#   celery -- the local Celery worker on this machine's GPU (default)
+#   modal  -- serverless GPUs on Modal; see modal_app.py. Search stays here,
+#             so answering a query never waits for a GPU to start.
+PIPELINE_BACKEND = os.getenv("PIPELINE_BACKEND", "celery").strip().lower()
+MODAL_APP_NAME = os.getenv("MODAL_APP_NAME", "documorph-pipeline")
+
+if PIPELINE_BACKEND == "modal":
+    import modal  # noqa: E402
+
+    celery_app = None
+    _MODAL_PROGRESS = modal.Dict.from_name("documorph-progress", create_if_missing=True)
+    _MODAL_OBJECTS: Dict[str, Any] = {}
+
+    def _modal_obj(cls_name: str):
+        obj = _MODAL_OBJECTS.get(cls_name)
+        if obj is None:
+            obj = modal.Cls.from_name(MODAL_APP_NAME, cls_name)()
+            _MODAL_OBJECTS[cls_name] = obj
+        return obj
+else:
+    from celery_app import celery_app  # noqa: E402
 
 VALID_MODES = {"FULL", "SUMMARY", "KEY_INSIGHTS", "CUSTOM_FIELDS"}
 
@@ -178,7 +200,24 @@ async def reset_collection(payload: ResetCollectionRequest) -> Dict[str, Any]:
 
 @app.get("/health")
 async def health() -> Dict[str, Any]:
-    status: Dict[str, Any] = {"status": "ok"}
+    status: Dict[str, Any] = {"status": "ok", "backend": PIPELINE_BACKEND}
+
+    if PIPELINE_BACKEND == "modal":
+        # The queue and the LLM both live on Modal; one round trip to it
+        # proves the credentials and the connection.
+        try:
+            await _MODAL_PROGRESS.len.aio()
+            status["queueReachable"] = True
+            status["ollamaReachable"] = True
+        except Exception:
+            status["queueReachable"] = False
+            status["ollamaReachable"] = False
+        try:
+            rag_pipeline.get_qdrant_client().get_collections()
+            status["qdrantReachable"] = True
+        except Exception:
+            status["qdrantReachable"] = False
+        return status
 
     try:
         import redis
@@ -217,9 +256,19 @@ async def process(
     if mode_upper not in VALID_MODES:
         raise HTTPException(status_code=400, detail=f"Invalid mode. Expected one of {sorted(VALID_MODES)}")
 
+    content = await file.read()
+
+    if PIPELINE_BACKEND == "modal":
+        try:
+            call = await _modal_obj("Processor").process.spawn.aio(
+                content, file.filename or "upload", mode_upper, customPrompt
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"Could not reach the GPU service: {exc}")
+        return ProcessResponse(pythonJobId=call.object_id)
+
     safe_name = f"{uuid.uuid4()}_{file.filename or 'upload'}"
     saved_path = os.path.join(UPLOAD_DIR, safe_name)
-    content = await file.read()
     with open(saved_path, "wb") as f:
         f.write(content)
 
@@ -233,6 +282,9 @@ async def process(
 
 @app.get("/status/{python_job_id}")
 async def get_status(python_job_id: str) -> Dict[str, Any]:
+    if PIPELINE_BACKEND == "modal":
+        return await _modal_status(python_job_id)
+
     result = celery_app.AsyncResult(python_job_id)
 
     if result.state == "PENDING":
@@ -294,7 +346,10 @@ async def answer(payload: AnswerRequest) -> Dict[str, Any]:
         passages = await run_in_threadpool(
             rag_pipeline.retrieve, question, payload.topK, payload.workspaceId
         )
-        result = await run_in_threadpool(llm_pipeline.answer_question, question, passages)
+        if PIPELINE_BACKEND == "modal":
+            result = await _modal_obj("Answerer").answer.remote.aio(question, passages)
+        else:
+            result = await run_in_threadpool(llm_pipeline.answer_question, question, passages)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Answering failed: {exc}")
     return result
@@ -310,3 +365,26 @@ async def delete_docs(payload: DeleteDocsRequest) -> Dict[str, Any]:
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Delete failed: {exc}")
     return {"deleted": n}
+
+
+async def _modal_status(call_id: str) -> Dict[str, Any]:
+    """Same response shape as the Celery path. A job with no progress entry
+    has not started yet; one the Modal API does not know is reported
+    NOT_FOUND so the backend offers a retry instead of waiting forever."""
+    try:
+        call = modal.FunctionCall.from_id(call_id)
+        result = await call.get.aio(timeout=0)
+    except TimeoutError:
+        fraction = await _MODAL_PROGRESS.get.aio(call_id)
+        if fraction is None:
+            return {"status": "QUEUED"}
+        return {"status": "PROCESSING", "progress": fraction}
+    except Exception as exc:
+        name = type(exc).__name__
+        if name in ("NotFoundError", "OutputExpiredError", "InvalidError"):
+            return {"status": "NOT_FOUND"}
+        if name == "TimeoutError":  # modal.exception.TimeoutError on some versions
+            fraction = await _MODAL_PROGRESS.get.aio(call_id)
+            return {"status": "PROCESSING", "progress": fraction or 0.0}
+        return {"status": "FAILED", "error": str(exc) or name}
+    return {"status": "COMPLETED", "result": result}
