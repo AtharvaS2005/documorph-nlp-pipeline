@@ -9,7 +9,7 @@ Embeddings: BAAI/bge-m3 via sentence-transformers -- a general multilingual
 embedding model, not tuned to any specific document domain.
 
 Vector DB: Qdrant, expected to be running separately (e.g. via Docker),
-reachable at QDRANT_URL (default http://localhost:6333).
+reachable at QDRANT_URL (default http://127.0.0.1:6333).
 
 Retrieval: cosine similarity, top-k configurable (default 5).
 """
@@ -21,7 +21,9 @@ from typing import Any, Dict, List, Optional
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 EMBEDDING_MODEL_NAME = os.getenv("RAG_EMBEDDING_MODEL", "BAAI/bge-m3")
-QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
+# 127.0.0.1, not localhost: on Windows, localhost tries IPv6 first and
+# waits about two seconds before falling back, on every new connection.
+QDRANT_URL = os.getenv("QDRANT_URL", "http://127.0.0.1:6333")
 DEFAULT_COLLECTION = os.getenv("QDRANT_COLLECTION", "documents")
 CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "1024") or "1024")
 CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "100") or "100")

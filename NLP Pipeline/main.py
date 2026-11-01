@@ -139,7 +139,7 @@ def _get_redis():
         import redis
 
         _REDIS_CLIENT = redis.Redis.from_url(
-            os.getenv("REDIS_URL", "redis://localhost:6379/0")
+            os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
         )
     return _REDIS_CLIENT
 
@@ -183,7 +183,7 @@ async def health() -> Dict[str, Any]:
     try:
         import redis
 
-        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+        redis_url = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
         redis.Redis.from_url(redis_url).ping()
         status["queueReachable"] = True
     except Exception:
