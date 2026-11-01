@@ -32,7 +32,9 @@ import uuid
 import modal
 
 APP_NAME = "documorph-pipeline"
-GPU = "L4"  # 24 GB: holds DeepSeek-OCR, Table Transformer and the LLM together
+# L4 (24 GB) holds DeepSeek-OCR, Table Transformer and the LLM together.
+# Override at deploy time, e.g.  MODAL_GPU=T4 modal deploy modal_app.py
+GPU = os.getenv("MODAL_GPU", "L4")
 LLM_MODEL = "qwen2.5:7b"
 OLLAMA_MODELS = "/opt/ollama/models"  # baked into the image, outside the volume
 
