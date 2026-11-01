@@ -25,7 +25,7 @@ import ollama
 
 PRIMARY_MODEL = os.getenv("LLM_PRIMARY_MODEL", "qwen2.5:7b")
 FALLBACK_MODEL = os.getenv("LLM_FALLBACK_MODEL", "llama3.1:8b")
-OLLAMA_HOST = os.getenv("OLLAMA_HOST")  # None -> ollama library default (localhost:11434)
+OLLAMA_HOST = os.getenv("OLLAMA_HOST")  # None -> ollama library default (127.0.0.1:11434)
 
 _AVAILABLE_MODELS_CACHE: Optional[set] = None
 
